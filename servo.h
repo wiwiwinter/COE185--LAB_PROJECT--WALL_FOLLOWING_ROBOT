@@ -5,22 +5,15 @@
 
 #define SERVO_PIN PB2
 
-#define SERVO_RIGHT   150   // ~ -90 deg (looking right)
-#define SERVO_LEFT    625   // ~ +90 deg (looking left)
-#define SERVO_FRONT   350   //   0 deg (looking forward)
+// Timer1 ticks at 4 us per count (prescaler 64 @ 16 MHz)
+#define SERVO_RIGHT   150   // 600 us pulse (~ -90 deg, looking right)
+#define SERVO_FRONT   350   // 1400 us pulse (   0 deg, looking forward)
+#define SERVO_LEFT    625   // 2500 us pulse (~ +90 deg, looking left)
 
 void setup_servo(void);
-
-// Move servo - returns 1 if move was needed, 0 if already at position
 uint8_t move_servo(int pulseWidth);
-
-// Smart move with calculated delay - returns suggested wait time via pointer
 uint8_t move_servo_smart(int pulseWidth, uint8_t *wait_ms);
-
-// Check if servo is already at target position
 uint8_t servo_at_position(int pulseWidth);
-
-// Get current servo position
 int get_servo_position(void);
 
 #endif

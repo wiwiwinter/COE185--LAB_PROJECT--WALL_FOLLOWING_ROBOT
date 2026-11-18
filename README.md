@@ -1,80 +1,156 @@
-﻿# Lab Project — Wall-Following Robot (AVR)
+# Wall-Following Robot (ATmega328P)
 
-This repository contains firmware for a simple wall-following robot implemented on an AVR (ATmega328P). The code provides ultrasonic distance sensing, servo-based scanning, and motor control with a small state machine for wall-following and obstacle avoidance.
+AVR C firmware for an autonomous differential-drive robot that tracks a right-hand wall using a servo-mounted HC-SR04 ultrasonic sensor and a Proportional-Derivative (PD) motor controller. Built for **COE185 Lab Project 3**.
 
-## Key features
-- Timer-based timekeeping (millis/micros) using Timer2
-- PWM motor control (Timer0) and servo control (Timer1)
-- Ultrasonic distance measuring (HC-SR04 style) using pin-change interrupts for echo timing
-- Smoothed wall-following algorithm with short reconfirmation for lost-wall events
-- UART debug output at 9600 baud
+---
 
-## Files of interest
-- `main.c` — high-level state machine (check front, check right, follow)
-- `motors.c`, `motors.h` — motor setup and PWM control
-- `servo.c`, `servo.h` — servo PWM and helper
-- `ultrasonic.c`, `ultrasonic.h` — ultrasonic trigger/echo logic
-- `time.c`, `time.h` — centralized millis()/micros() using Timer2
-- `uart.c`, `uart.h` — simple UART helpers
-- `Makefile` — build and flash targets
+## System Architecture
 
-## Wiring / Pin mapping (from source)
-- Left control (direction): PD2
-- Left PWM: PD5 (OC0B)
-- Right control (direction): PD4
-- Right PWM: PD6 (OC0A)
-- Servo PWM: PB2 (OC1B)
-- Ultrasonic Trigger: PB4
-- Ultrasonic Echo (PCINT): PB5
+The firmware splits hardware timers and interrupts across three dedicated peripherals so that distance timing, servo pulse generation, and wheel PWM never block or interfere with each other:
 
-> Note: Verify your hardware wiring matches these pins. Motor direction polarity in `motors.c` may require flipping depending on motor driver wiring.
+```mermaid
+graph LR
+    subgraph ATmega328P ["ATmega328P @ 16 MHz"]
+        T0["Timer0 (8-bit Fast PWM)\nPrescaler 64 (~976.5 Hz)"]
+        T1["Timer1 (16-bit Fast PWM)\nPrescaler 64 (50 Hz, TOP=4999)"]
+        T2["Timer2 (8-bit CTC)\nPrescaler 64 (1 ms tick, 4 us res)"]
+        PCINT["PCINT0 ISR\n(Pin PB5)"]
+        FSM["Main Loop\nState Machine + PD Controller"]
+        UART["USART0\n9600 8N2"]
+    end
+
+    subgraph Hardware ["Robot Peripherals"]
+        M_L["Left Motor\n(PD2 Dir, PD5 PWM)"]
+        M_R["Right Motor\n(PD4 Dir, PD6 PWM)"]
+        SERVO["Scanning Servo\n(PB2 / OC1B)"]
+        SR04["HC-SR04 Ultrasonic\n(PB4 Trig, PB5 Echo)"]
+        SERIAL["Serial Monitor"]
+    end
+
+    FSM --> T0
+    FSM --> T1
+    T2 --> FSM
+    T2 --> PCINT
+    SR04 -->|Echo Edges| PCINT
+    FSM -->|10 us Trigger| SR04
+    T0 --> M_L
+    T0 --> M_R
+    T1 --> SERVO
+    FSM --> UART --> SERIAL
+```
+
+---
+
+## Navigation State Machine
+
+During normal operation (`STATE_RUNNING`), the servo stays pointed to the right (`SERVO_RIGHT = 150`, ~600 us pulse) to sample the wall continuously. Every `150 ms`, the robot briefly slows to `MIN_SPEED`, sweeps the servo forward (`SERVO_FRONT = 350`, ~1400 us pulse) to check for front obstacles, and returns the servo to the right wall.
+
+```mermaid
+stateDiagram-v2
+    [*] --> STATE_STARTUP
+    STATE_STARTUP --> STATE_RUNNING : Valid right reading (> 0.0 in)
+    
+    STATE_RUNNING --> STATE_EMERGENCY_STOP : Right distance < 2.0 in
+    STATE_RUNNING --> STATE_FIND_WALL : Right distance > 18.0 in\nor > 3 bad readings
+    STATE_RUNNING --> STATE_OBSTACLE_AVOID : Front check (every 150 ms)\ndetects obstacle < 14.0 in
+    
+    STATE_EMERGENCY_STOP --> STATE_RUNNING : Back up (200 ms) +\npivot left (150 ms)
+    STATE_FIND_WALL --> STATE_RUNNING : Curve right until\nwall < 18.0 in
+    STATE_OBSTACLE_AVOID --> STATE_OBSTACLE_AVOID : Front still < 14.0 in\nafter 200 ms left pivot
+    STATE_OBSTACLE_AVOID --> STATE_RUNNING : Path clear + 150 ms forward
+```
+
+---
+
+## Hardware Pinout & Timer Allocation
+
+```text
+                        ATmega328P (Arduino Uno Mapping)
+                             +------------------+
+                        PC6 -| 1             28 |- PC5
+        UART RX (D0) <- PD0 -| 2             27 |- PC4
+        UART TX (D1) -> PD1 -| 3             26 |- PC3
+       LEFT_DIR (D2) <- PD2 -| 4             25 |- PC2
+                        PD3 -| 5             24 |- PC1
+      RIGHT_DIR (D4) <- PD4 -| 6             23 |- PC0
+                        VCC -| 7             22 |- GND
+                        GND -| 8             21 |- AREF
+                        PB6 -| 9             20 |- AVCC
+                        PB7 -| 10            19 |- PB5 -> ECHO_PIN (D13 / PCINT5)
+       LEFT_PWM (D5) <- PD5 -| 11 (OC0B)     18 |- PB4 <- TRIGGER_PIN (D12)
+      RIGHT_PWM (D6) <- PD6 -| 12 (OC0A)     17 |- PB3
+                        PD7 -| 13            16 |- PB2 -> SERVO_PIN (D10 / OC1B)
+                        PB0 -| 14            15 |- PB1
+                             +------------------+
+```
+
+| Peripheral | AVR Pin | Arduino Pin | Direction | Hardware Resource | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Left Motor Dir** | `PD2` | `D2` | Output | GPIO (`PORTD`) | `HIGH` = Forward, `LOW` = Backward |
+| **Right Motor Dir** | `PD4` | `D4` | Output | GPIO (`PORTD`) | `LOW` = Forward, `HIGH` = Backward |
+| **Left Motor PWM** | `PD5` | `D5` | Output | `Timer0` (`OC0B`) | Fast PWM, scaled by `MOTOR_TOP_SPEED` (200) |
+| **Right Motor PWM** | `PD6` | `D6` | Output | `Timer0` (`OC0A`) | Fast PWM, scaled by `MOTOR_TOP_SPEED` (200) |
+| **Servo Signal** | `PB2` | `D10` | Output | `Timer1` (`OC1B`) | 50 Hz Fast PWM (`OCR1A = 4999`, 4 us/tick) |
+| **Ultrasonic Trig** | `PB4` | `D12` | Output | GPIO (`PORTB`) | 10 us HIGH pulse initiates measurement |
+| **Ultrasonic Echo** | `PB5` | `D13` | Input | `PCINT0` (`PCINT5`) | Rising/falling edges timed with `micros()` |
+| **System Timebase** | Internal | Internal | Internal | `Timer2` (`COMPA`) | CTC mode (`OCR2A = 249`), 1 ms ISR, 4 us `TCNT2` |
+
+---
+
+## Repository Structure
+
+| File | Responsibility |
+| :--- | :--- |
+| [`main.c`](main.c) | 5-state navigation FSM, 3-sample moving average filter, and PD steering controller (`KP = 0.035`, `KD = 0.015`). |
+| [`motors.c`](motors.c) / [`motors.h`](motors.h) | Timer0 Fast PWM initialization, motor direction polarity control, and speed clamping. |
+| [`servo.c`](servo.c) / [`servo.h`](servo.h) | Timer1 50 Hz PWM setup, position tracking to skip redundant moves, and dynamic settling estimation. |
+| [`ultrasonic.c`](ultrasonic.c) / [`ultrasonic.h`](ultrasonic.h) | Non-blocking `PCINT0` echo capture, 15 ms timeout guard, and conversion to inches (`0.00675197 in/us`). |
+| [`time.c`](time.c) / [`time.h`](time.h) | Atomic `millis()` and `micros()` counters driven by Timer2 Compare Match A. |
+| [`uart.c`](uart.c) / [`uart.h`](uart.h) | Polling UART transmitter at 9600 baud for real-time telemetry (`R: 8.95in`, `F: 24.10in`). |
+| [`Makefile`](Makefile) | Build rules for `avr-gcc`, floating-point `vfprintf` linking (`-lprintf_flt`), and `avrdude` flashing. |
+| [`GUIDE.md`](GUIDE.md) | Step-by-step hardware setup, calibration, PD tuning, and troubleshooting reference. |
+| [`ABOUT.md`](ABOUT.md) | Project summary and authorship notes. |
+
+---
 
 ## Build & Flash
-Requirements: avr-gcc toolchain (avr-gcc, avr-libc, avrdude).
 
-1. Build:
+### Prerequisites
+- `avr-gcc` and `avr-libc`
+- `avrdude`
+- GNU `make`
 
+### 1. Compile the Firmware
 ```powershell
 make clean
 make
 ```
+This compiles all source modules and generates `main.elf` and `main.hex`.
 
-2. Flash (adjust `Makefile` programmer settings if needed):
-
+### 2. Flash to ATmega328P
+Update `PROGRAMMER` in [`Makefile`](Makefile) if your board uses a port other than `COM3`:
+```makefile
+PROGRAMMER = -c arduino -b 115200 -P COM3
+```
+Then flash over USB:
 ```powershell
 make flash
 ```
 
-## Serial output
-- Baud: 9600
-- Logs include sensor readings (inches), action markers, and confirmation messages.
+---
 
-## Units
-- Distances in this project use inches (converted from original samples in cm). The ultrasonic module returns inches.
+## Control & Tuning Summary
 
-## Tuning
-- Speed and timing constants live in `main.c` (BASE_PERCENT, FAST_PERCENT_MULT, movement durations) and `motors.h` (MOTOR_TOP_SPEED). Tune these values to match your robot's motors, battery voltage, and friction.
-- `SERVO_SETTLE_MS` and ultrasonic sample delays can be reduced if your servo is fast and your sensor is reliable.
+All distances are processed in **inches**. Key parameters in [`main.c`](main.c) and [`motors.h`](motors.h):
 
-## Troubleshooting
-- If printed floats show as `?` ensure the final link includes `-lprintf_flt`. The provided `Makefile` includes LDFLAGS to link floating printf.
-- If motors act opposite of expectation, swap the forward/backward polarity in `motors.c` or reverse wiring of direction pins.
-- If ultrasonic returns 0.0 frequently, check wiring for trigger/echo, and ensure `PCICR`/`PCMSK0` are configured for the correct pin (PB5).
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `DESIRED_DISTANCE_IN` | `9.0 in` | Target distance maintained from the right wall. |
+| `DISTANCE_TOLERANCE` | `2.5 in` | Error band within which the robot accelerates to `MAX_SPEED` (`0.32`). |
+| `OBSTACLE_TH_IN` | `14.0 in` | Front distance threshold that triggers `STATE_OBSTACLE_AVOID`. |
+| `WALL_LOST_TH_IN` | `18.0 in` | Right distance threshold that triggers `STATE_FIND_WALL`. |
+| `EMERGENCY_STOP_DIST` | `2.0 in` | Minimum right-wall clearance before backing up (`STATE_EMERGENCY_STOP`). |
+| `KP` / `KD` | `0.035` / `0.015` | Proportional and derivative gains for differential wheel steering. |
+| `MOTOR_TOP_SPEED` | `200` | Maximum 8-bit Timer0 PWM ceiling (out of 255). |
 
-## How the state machine works
-1. Check front — if obstacle < threshold, perform `avoid_obstacle()` (left turn + forward)
-2. Check right — servo to right, read distance
-   - If too close -> small correction (left)
-   - If wall lost (distance too large) -> `find_wall()` routine
-   - Else -> `follow_wall_behavior()` burst (fast mode)
-3. Loop
-
-## Next improvements
-- Convert blocking delays to non-blocking state machine with `millis()` for better responsiveness
-- Add compile-time `DEBUG` flag to reduce UART output in release
-- Add unit-test harness for sensor and motor simulations
-
-## Contact / Authors
-See `ABOUT.md` for a short project summary and authorship.
-
-
+For detailed calibration steps, PD controller math, and troubleshooting, see [`GUIDE.md`](GUIDE.md).
