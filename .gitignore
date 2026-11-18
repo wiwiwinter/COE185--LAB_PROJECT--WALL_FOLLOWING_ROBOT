@@ -5,6 +5,7 @@
 *.map
 *.lst
 *.eep
+build/
 
 # IDE and project files
 .project

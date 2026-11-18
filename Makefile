@@ -1,30 +1,30 @@
 DEVICE     = atmega328p
 CLOCK      = 16000000
 PROGRAMMER = -c arduino -b 115200 -P COM3
-OBJECTS    = main.o time.o ultrasonic.o motors.o servo.o uart.o
 FUSES      = -U hfuse:w:0xde:m -U lfuse:w:0xff:m -U efuse:w:0x05:m
 
-AVRDUDE = avrdude $(PROGRAMMER) -p $(DEVICE)
-COMPILE = avr-gcc -Wall -Os -std=gnu99 -DDEBUG_SAMPLES -DF_CPU=$(CLOCK) -mmcu=$(DEVICE)
+SRC_DIR    = src
+INC_DIR    = include
+OBJECTS    = $(SRC_DIR)/main.o $(SRC_DIR)/time.o $(SRC_DIR)/ultrasonic.o $(SRC_DIR)/motors.o $(SRC_DIR)/servo.o $(SRC_DIR)/uart.o
 
-CFLAGS += -O2
-LDFLAGS += -Wl,-u,vfprintf -lprintf_flt -lm
+AVRDUDE    = avrdude $(PROGRAMMER) -p $(DEVICE)
+COMPILE    = avr-gcc -Wall -Os -std=gnu99 -I$(INC_DIR) -DDEBUG_SAMPLES -DF_CPU=$(CLOCK) -mmcu=$(DEVICE)
+LDFLAGS   += -Wl,-u,vfprintf -lprintf_flt -lm
 
-%.elf: %.o $(OBJECTS)
-	$(COMPILE) $(LDFLAGS) -o $@ $^
+all: main.hex
 
-all:	main.hex
-
-.c.o:
+$(SRC_DIR)/%.o: $(SRC_DIR)/%.c
 	$(COMPILE) -c $< -o $@
 
-.S.o:
-	$(COMPILE) -x assembler-with-cpp -c $< -o $@
+main.elf: $(OBJECTS)
+	$(COMPILE) -o main.elf $(OBJECTS) $(LDFLAGS)
 
-.c.s:
-	$(COMPILE) -S $< -o $@
+main.hex: main.elf
+	rm -f main.hex
+	avr-objcopy -j .text -j .data -O ihex main.elf main.hex
+	avr-size --format=avr --mcu=$(DEVICE) main.elf
 
-flash:	all
+flash: all
 	$(AVRDUDE) -U flash:w:main.hex:i
 
 fuse:
@@ -38,16 +38,8 @@ load: all
 clean:
 	rm -f main.hex main.elf $(OBJECTS)
 
-main.elf: $(OBJECTS)
-	$(COMPILE) -o main.elf $(OBJECTS) $(LDFLAGS)
-
-main.hex: main.elf
-	rm -f main.hex
-	avr-objcopy -j .text -j .data -O ihex main.elf main.hex
-	avr-size --format=avr --mcu=$(DEVICE) main.elf
-
-disasm:	main.elf
+disasm: main.elf
 	avr-objdump -d main.elf
 
 cpp:
-	$(COMPILE) -E main.c
+	$(COMPILE) -E $(SRC_DIR)/main.c

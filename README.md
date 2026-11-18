@@ -99,17 +99,27 @@ stateDiagram-v2
 
 ## Repository Structure
 
-| File | Responsibility |
-| :--- | :--- |
-| [`main.c`](main.c) | 5-state navigation FSM, 3-sample moving average filter, and PD steering controller (`KP = 0.035`, `KD = 0.015`). |
-| [`motors.c`](motors.c) / [`motors.h`](motors.h) | Timer0 Fast PWM initialization, motor direction polarity control, and speed clamping. |
-| [`servo.c`](servo.c) / [`servo.h`](servo.h) | Timer1 50 Hz PWM setup, position tracking to skip redundant moves, and dynamic settling estimation. |
-| [`ultrasonic.c`](ultrasonic.c) / [`ultrasonic.h`](ultrasonic.h) | Non-blocking `PCINT0` echo capture, 15 ms timeout guard, and conversion to inches (`0.00675197 in/us`). |
-| [`time.c`](time.c) / [`time.h`](time.h) | Atomic `millis()` and `micros()` counters driven by Timer2 Compare Match A. |
-| [`uart.c`](uart.c) / [`uart.h`](uart.h) | Polling UART transmitter at 9600 baud for real-time telemetry (`R: 8.95in`, `F: 24.10in`). |
-| [`Makefile`](Makefile) | Build rules for `avr-gcc`, floating-point `vfprintf` linking (`-lprintf_flt`), and `avrdude` flashing. |
-| [`GUIDE.md`](GUIDE.md) | Step-by-step hardware setup, calibration, PD tuning, and troubleshooting reference. |
-| [`ABOUT.md`](ABOUT.md) | Project summary and authorship notes. |
+```text
+COE185--LAB_PROJECT--WALL_FOLLOWING_ROBOT/
+├── src/
+│   ├── main.c          # 5-state navigation FSM, moving-average filter, and PD controller
+│   ├── motors.c        # Timer0 Fast PWM setup and differential wheel control
+│   ├── servo.c         # Timer1 50 Hz servo control and position tracking
+│   ├── ultrasonic.c    # PCINT0 non-blocking echo capture and inch conversion
+│   ├── time.c          # Timer2 CTC 1 ms / 4 us timebase (millis / micros)
+│   └── uart.c          # 9600-baud serial telemetry helpers
+├── include/
+│   ├── motors.h        # Motor pins, direction constants, and MOTOR_TOP_SPEED
+│   ├── servo.h         # Servo pin and pulse-width tick constants
+│   ├── ultrasonic.h    # Ultrasonic trigger/echo pins and measurement API
+│   ├── time.h          # Timekeeping function declarations
+│   └── uart.h          # UART initialization and print declarations
+├── docs/
+│   ├── GUIDE.md        # Hardware setup, timer math, PD tuning, and troubleshooting
+│   └── ABOUT.md        # Project overview and authorship notes
+├── Makefile            # Build, size, and avrdude flash rules
+└── README.md           # Architecture, pinout, and quick-start documentation
+```
 
 ---
 
@@ -125,7 +135,7 @@ stateDiagram-v2
 make clean
 make
 ```
-This compiles all source modules and generates `main.elf` and `main.hex`.
+This compiles all modules in `src/` with headers from `include/` and generates `main.elf` and `main.hex`.
 
 ### 2. Flash to ATmega328P
 Update `PROGRAMMER` in [`Makefile`](Makefile) if your board uses a port other than `COM3`:
@@ -141,7 +151,7 @@ make flash
 
 ## Control & Tuning Summary
 
-All distances are processed in **inches**. Key parameters in [`main.c`](main.c) and [`motors.h`](motors.h):
+All distances are processed in **inches**. Key parameters in [`src/main.c`](src/main.c) and [`include/motors.h`](include/motors.h):
 
 | Parameter | Default | Description |
 | :--- | :--- | :--- |
@@ -153,4 +163,4 @@ All distances are processed in **inches**. Key parameters in [`main.c`](main.c) 
 | `KP` / `KD` | `0.035` / `0.015` | Proportional and derivative gains for differential wheel steering. |
 | `MOTOR_TOP_SPEED` | `200` | Maximum 8-bit Timer0 PWM ceiling (out of 255). |
 
-For detailed calibration steps, PD controller math, and troubleshooting, see [`GUIDE.md`](GUIDE.md).
+For detailed calibration steps, PD controller math, and troubleshooting, see [`docs/GUIDE.md`](docs/GUIDE.md).
